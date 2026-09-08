@@ -1,0 +1,26 @@
+name: armor_lock_mobile
+description: Armor Lock Mobile MVP - a Flutter encrypted vault protected by OS authentication.
+publish_to: "none"
+version: 0.3.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  local_auth: 3.0.2
+  cryptography: 2.9.0
+  cryptography_flutter: 2.3.4
+  flutter_secure_storage: 11.0.0
+  path_provider: ^2.1.5
+  uuid: ^4.5.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
