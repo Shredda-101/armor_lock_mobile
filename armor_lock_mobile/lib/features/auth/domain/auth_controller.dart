@@ -23,6 +23,31 @@ class AuthController extends ChangeNotifier {
 
   AuthState get state => _state;
 
+  /// Verifies that the current session is still valid.
+  /// If expired, immediately locks the vault.
+  /// Returns true if session is active, false if expired/locked.
+  bool verifySessionValid() {
+    final now = DateTime.now();
+    final expiresAt = _state.sessionExpiresAt;
+
+    // Session must exist and not be expired.
+    if (expiresAt != null && now.isAfter(expiresAt)) {
+      // Session expired—lock immediately.
+      _state = const AuthState.locked();
+      _journal.append(
+        SecurityEvent(
+          type: SecurityEventType.vaultLock,
+          occurredAt: DateTime.now(),
+          message: 'Session expired. Vault auto-locked.',
+        ),
+      );
+      notifyListeners();
+      return false;
+    }
+
+    return _state.hasActiveSession;
+  }
+
   Future<void> unlock() async {
     final now = DateTime.now();
     final lockedUntil = _state.lockdownUntil;

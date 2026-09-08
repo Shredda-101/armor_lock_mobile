@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../../security_journal/domain/security_event.dart';
 import '../../security_journal/domain/security_event_journal.dart';
 import '../crypto/vault_crypto_service.dart';
+import '../data/app_version_tracker.dart';
 import 'key_repository.dart';
 import 'protected_vault_key.dart';
 import 'rollback_guard.dart';
@@ -17,17 +18,20 @@ class VaultController extends ChangeNotifier {
     required VaultRecordRepository recordRepository,
     required RollbackGuard rollbackGuard,
     required SecurityEventJournal journal,
+    required AppVersionTracker versionTracker,
   })  : _cryptoService = cryptoService,
         _keyRepository = keyRepository,
         _recordRepository = recordRepository,
         _rollbackGuard = rollbackGuard,
-        _journal = journal;
+        _journal = journal,
+        _versionTracker = versionTracker;
 
   final VaultCryptoService _cryptoService;
   final KeyRepository _keyRepository;
   final VaultRecordRepository _recordRepository;
   final RollbackGuard _rollbackGuard;
   final SecurityEventJournal _journal;
+  final AppVersionTracker _versionTracker;
 
   VaultState _state = const VaultState.unknown();
   final List<VaultRecord> _records = <VaultRecord>[];
@@ -36,16 +40,24 @@ class VaultController extends ChangeNotifier {
   VaultState get state => _state;
   List<VaultRecord> get records => List<VaultRecord>.unmodifiable(_records);
 
-  Future<void> initialize({int? recoveredLocalVersion}) async {
+  Future<void> initialize() async {
     final storedKey = await _keyRepository.readProtectedVaultKey();
     final protectedVersion = await _keyRepository.readProtectedVersion();
 
+    // CRITICAL: Use external version tracker to detect rollback.
+    // The rollback guard will compare protected version against independent external counter.
     final rollbackDecision = await _rollbackGuard.compare(
       protectedVersion: protectedVersion,
-      recoveredLocalVersion: recoveredLocalVersion ?? protectedVersion,
     );
 
     if (rollbackDecision == RollbackDecision.rollbackDetected) {
+      await _journal.append(
+        SecurityEvent(
+          type: SecurityEventType.rollbackDetected,
+          occurredAt: DateTime.now(),
+          message: 'Rollback detected during initialization. Vault permanently locked.',
+        ),
+      );
       _state = const VaultState(
         status: VaultStatus.permanentlyLocked,
         version: 0,
@@ -112,6 +124,11 @@ class VaultController extends ChangeNotifier {
     await _recordRepository.saveRecords(_records);
     await _keyRepository.writeProtectedVaultKey(nextKey);
     await _keyRepository.writeProtectedVersion(nextVersion);
+    
+    // CRITICAL: Increment external version counter to track rollback protection.
+    // This counter advances independently and prevents restoring to an earlier state.
+    await _versionTracker.incrementExternalVersion();
+    
     await _journal.append(
       SecurityEvent(
         type: SecurityEventType.vaultSealed,
@@ -128,7 +145,36 @@ class VaultController extends ChangeNotifier {
   Future<String> unsealText(VaultRecord record) async {
     final key = _protectedKey;
     if (key == null) {
+      await _journal.append(
+        SecurityEvent(
+          type: SecurityEventType.keyError,
+          occurredAt: DateTime.now(),
+          message: 'Attempted unseal with unavailable key.',
+          metadata: <String, String>{'recordId': record.id},
+        ),
+      );
       throw Exception('Vault key is unavailable.');
+    }
+
+    // CRITICAL: Validate that record version matches or is earlier than key version.
+    // Decrypting with a mismatched key version indicates state corruption or rollback.
+    if (record.version > key.version) {
+      await _journal.append(
+        SecurityEvent(
+          type: SecurityEventType.keyError,
+          occurredAt: DateTime.now(),
+          message: 'Version mismatch: record version exceeds key version.',
+          metadata: <String, String>{
+            'recordId': record.id,
+            'recordVersion': '${record.version}',
+            'keyVersion': '${key.version}',
+          },
+        ),
+      );
+      throw Exception(
+        'Version mismatch: record (${ record.version}) > key (${key.version}). '
+        'State corruption detected.',
+      );
     }
 
     final plainText = await _cryptoService.decryptText(
@@ -141,7 +187,7 @@ class VaultController extends ChangeNotifier {
         type: SecurityEventType.vaultOpened,
         occurredAt: DateTime.now(),
         message: 'Encrypted vault item unsealed.',
-        metadata: <String, String>{'recordId': record.id},
+        metadata: <String, String>{'recordId': record.id, 'version': '${record.version}'},
       ),
     );
 

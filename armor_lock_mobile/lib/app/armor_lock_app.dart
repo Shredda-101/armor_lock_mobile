@@ -4,8 +4,10 @@ import '../features/auth/data/local_authenticator.dart';
 import '../features/auth/domain/auth_controller.dart';
 import '../features/auth/domain/lock_policy.dart';
 import '../features/auth/presentation/lock_gate_screen.dart';
+import '../features/security_journal/data/persistent_security_event_journal.dart';
 import '../features/security_journal/domain/security_event_journal.dart';
 import '../features/vault/crypto/vault_crypto_service.dart';
+import '../features/vault/data/app_version_tracker.dart';
 import '../features/vault/data/local_file_vault_record_repository.dart';
 import '../features/vault/data/secure_storage_key_repository.dart';
 import '../features/vault/domain/rollback_guard.dart';
@@ -27,7 +29,9 @@ class _ArmorLockAppState extends State<ArmorLockApp> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _journal = InMemorySecurityEventJournal();
+    // CRITICAL: Use persistent journal for audit trail and forensics.
+    // Events survive app restarts and tamper-evident history is maintained.
+    _journal = PersistentSecurityEventJournal();
 
     _authController = AuthController(
       authenticator: LocalDeviceAuthenticator(),
@@ -35,12 +39,15 @@ class _ArmorLockAppState extends State<ArmorLockApp> with WidgetsBindingObserver
       lockPolicy: const LockPolicy(),
     );
 
+    final versionTracker = AppVersionTracker();
+
     _vaultController = VaultController(
       cryptoService: VaultCryptoService(),
       keyRepository: SecureStorageKeyRepository(),
       recordRepository: LocalFileVaultRecordRepository(),
-      rollbackGuard: RollbackGuard(journal: _journal),
+      rollbackGuard: RollbackGuard(journal: _journal, versionTracker: versionTracker),
       journal: _journal,
+      versionTracker: versionTracker,
     );
   }
 
